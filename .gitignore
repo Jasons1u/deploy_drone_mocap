@@ -1,0 +1,13 @@
+# colcon
+/build/
+/install/
+/log/
+
+# python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# Crazyflie firmware build (fetched by crazyflie/firmware/setup_firmware.sh)
+/crazyflie/firmware/crazyflie-firmware/
+/crazyflie/firmware/mocap_estimator/build/

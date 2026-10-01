@@ -1,0 +1,3 @@
+# Merged into the platform defconfig (cf21bl_defconfig) by the firmware's oot.mk.
+# Forces the out-of-tree estimator (see estimator.c): this build always runs the mocap passthrough.
+CONFIG_ESTIMATOR_OOT=y

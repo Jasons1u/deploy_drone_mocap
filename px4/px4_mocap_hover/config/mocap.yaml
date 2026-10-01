@@ -1,0 +1,17 @@
+# mocap_bridge — OptiTrack -> /mocap/odom + PX4 external vision.
+mocap_bridge:
+  ros__parameters:
+    server_ip: ""               # REQUIRED: IP of the PC running Motive
+    local_ip: "0.0.0.0"         # this machine's IP on the Motive network if it has several NICs
+    rigid_body_id: 1            # create it in Motive with the drone's nose along +X
+    up_axis: "z"                # Motive Streaming "Up Axis": z | y
+    natnet_version: ""          # "" = ask Motive; e.g. "4.1" if the command port is blocked
+
+    odom_topic: "/mocap/odom"
+    frame_id: "mocap"
+    child_frame_id: "base_link"
+
+    publish_px4: true           # also feed EKF2 via /fmu/in/vehicle_visual_odometry
+    px4_topic: "/fmu/in/vehicle_visual_odometry"
+    position_std_m: 0.005       # variances reported to EKF2 (used when EKF2_EV_NOISE_MD = 0,
+    orientation_std_rad: 0.02   #   lower-bounded by EKF2_EVP_NOISE / EKF2_EVA_NOISE)

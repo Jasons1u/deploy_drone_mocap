@@ -1,0 +1,47 @@
+# Python side of this repo, installed into its OWN conda env (never the system Python):
+#
+#     conda env create -f environment.yml       # env `drone_mocap`, runs `pip install -e .[test]`
+#     conda activate drone_mocap
+#
+# Installs
+#   mocap_natnet  (mocap/)     OptiTrack NatNet client, + `python3 -m mocap_natnet`
+#   cf_mocap      (crazyflie/) Crazyflie hover, + the `cf-hover` command
+# and their dependencies. tools/conda_env_guard.py makes `pip install` refuse outside a non-base
+# conda env, so these packages (numpy 2.x via cflib) can never land where ROS 2 Humble sees them.
+#
+# The ROS 2 packages under px4/ are built with colcon against the system Python, not pip (see
+# README). colcon ignores this file — do NOT add a setup.py at the repo root, or colcon will treat
+# the whole repo as one package.
+#
+# Editable only: cf_mocap reads crazyflie/config/ and writes crazyflie/logs/ next to its source.
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "conda_env_guard"
+backend-path = ["tools"]
+
+[project]
+name = "deploy-drone-mocap"
+version = "0.1.0"
+description = "Crazyflie and PX4 hover with OptiTrack as perception"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "cflib>=0.1.33",        # Crazyflie radio link (cf.supervisor arming API)
+    "pygame>=2.5",          # gamepad deadman
+    "pyyaml>=5.4",          # configs
+    "numpy",
+    "onnxruntime>=1.16",    # hover policy tests (px4/px4_mocap_hover/test)
+    "matplotlib>=3.5",      # crazyflie/scripts/plot_flight.py
+]
+
+[project.optional-dependencies]
+test = ["pytest>=6"]
+
+[project.scripts]
+cf-hover = "cf_mocap.hover:main"
+
+[tool.setuptools]
+package-dir = { mocap_natnet = "mocap/mocap_natnet", cf_mocap = "crazyflie/cf_mocap" }
+packages = ["mocap_natnet", "cf_mocap"]

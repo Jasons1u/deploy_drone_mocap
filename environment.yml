@@ -1,0 +1,15 @@
+# The `drone_mocap` env: interpreter + pip only. Don't use this file directly; run ./install.sh,
+# which creates the env from it and then installs this repo (dependencies: pyproject.toml).
+#
+# There is deliberately no `pip:` section: conda runs that step without PYTHONNOUSERSITE, and pip
+# would then modify ~/.local (shared with the system Python that ROS 2 uses).
+name: drone_mocap
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10
+  - pip
+variables:                # applied on `conda activate drone_mocap`, restored on deactivate
+  PYTHONNOUSERSITE: "1"   # never see ~/.local/lib/python3.10 (shared with the system Python)
+  PYTHONPATH: ""          # never see ROS 2's Python packages (~/.bashrc sources ROS everywhere)

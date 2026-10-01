@@ -1,0 +1,17 @@
+# hover_node — policy + safety. See hover_node.py for the full behaviour.
+hover_node:
+  ros__parameters:
+    policy_onnx: "new_hover.onnx"   # in policy/ (or an absolute path). hover.onnx = 36-dim w/ ground_prox
+    providers: ["CPUExecutionProvider"]
+    control_hz: 100.0               # the policy was trained at 100 Hz
+
+    # px4:   state from EKF2 (/fmu/out/vehicle_odometry), which fuses mocap via mocap_bridge
+    # mocap: pos/vel/attitude straight from /mocap/odom, gyro from PX4
+    state_source: "px4"
+    mocap_odom_topic: "/mocap/odom"
+
+    require_offboard: true          # false only in SITL: policy runs whenever state is fresh
+    stale_timeout_s: 0.1            # engaged + any state input older than this -> motors NaN
+    frame_check_tol_m: 0.1          # pre-engage warning if PX4 and mocap positions disagree
+    max_nudge_m: 0.5                # reject bigger /hover/nudge steps
+    max_nudge_yaw_rad: 0.5          # reject bigger /hover/nudge_yaw steps

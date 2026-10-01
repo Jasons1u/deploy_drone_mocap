@@ -1,0 +1,1 @@
+cmd_/home/lab/drone_ws/deploy_drone_mocap/crazyflie/firmware/mocap_estimator/built-in.o :=  arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16  -r -o /home/lab/drone_ws/deploy_drone_mocap/crazyflie/firmware/mocap_estimator/built-in.o /home/lab/drone_ws/deploy_drone_mocap/crazyflie/firmware/mocap_estimator/src/built-in.o

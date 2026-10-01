@@ -1,0 +1,70 @@
+# Crazyflie mocap hover. Every value here can be overridden on the command line with
+#   cf-hover --set flight.hover_height=0.6 --set mocap.server_ip=192.168.1.10
+
+radio:
+  uri: "radio://0/80/2M/E7E7E7E7E7"   # `cf-hover --scan` lists what the radio can see
+  cache_dir: "cache"                  # cflib TOC cache (relative to this package), speeds up connect
+
+mocap:
+  server_ip: 192.168.1.2          # REQUIRED: IP of the PC running Motive
+  local_ip: "0.0.0.0"      # this PC's IP on the Motive network if it has several NICs
+  rigid_body_id: 23         # Motive rigid body ID of the drone (create it with the nose along +X)
+  up_axis: "z"             # Motive Streaming "Up Axis": z | y
+  natnet_version: null     # null = ask Motive; or e.g. "4.1" if the command port is blocked
+  extpose_hz: 100.0        # rate OptiTrack pose is forwarded to the onboard Kalman filter
+  ext_pos_std_dev: 0.01    # [m]   Kalman measurement std dev (firmware default 0.01)
+  ext_quat_std_dev: 0.0045 # [rad] Kalman measurement std dev (firmware default 4.5e-3)
+  body_yaw_offset_deg: 0.0          # rigid body x -> drone nose; set by `cf-hover --calibrate-yaw`
+  body_tilt_offset_deg: [-3.138, -1.600]   # [roll, pitch] rigid body -> IMU; set by `cf-hover --calibrate-tilt`
+
+flight:
+  # mocap:  drone runs crazyflie/firmware (mocap passthrough estimator), onboard controller flies
+  # kalman: stock firmware, mocap -> onboard Kalman filter, onboard controller flies (`--kalman`)
+  # host:   host-side controller on raw mocap (mocap_control.py), drone only stabilises attitude
+  state_source: "mocap"
+  controller: "indi"       # onboard controller (mocap / kalman): indi | pid | mellinger | brescianini | lee
+  hover_height: 0.4        # [m] above the takeoff point — start low
+  hover_duration: 10.0     # [s] then land automatically; 0 = hover until the land button
+  takeoff_time: 2.5        # [s] vertical ramp up
+  land_time: 2.5           # [s] vertical ramp down
+  setpoint_hz: 100.0       # setpoint stream rate (firmware levels out after 0.5 s without one)
+
+host_control:              # the mocap-state controller (not used with --kalman); see mocap_control.py
+  hover_thrust: 36000      # PWM that holds a hover; z integrator trims the rest (flight logs: ~35500)
+  thrust_min: 20000
+  thrust_max: 60000        # firmware cap
+  kp_xy: 1.5               # [1/s]    position error -> velocity command
+  kp_z: 1.5
+  kv_xy: 3.0               # [1/s]    velocity error -> acceleration command
+  kv_z: 4.0
+  ki_xy: 0.5               # [1/s^2]  velocity-error integral (tilt trim; only once airborne)
+  ki_z: 3.0                #          (hover-thrust trim)
+  i_limit_xy: 1.0          # [m/s^2]  integral clamps
+  i_limit_z: 2.5
+  max_vel_xy: 0.5          # [m/s]
+  max_vel_z: 0.5
+  max_accel_z: 4.0         # [m/s^2]
+  max_tilt_deg: 15.0
+  kp_yaw: 2.0              # [1/s]    heading error -> yaw rate
+  max_yawrate_deg_s: 60.0
+
+safety:
+  mocap_timeout: 0.2              # [s] in flight: no valid mocap frame this long -> E-STOP
+  preflight_max_error: 0.05       # [m] Kalman vs mocap before takeoff is allowed
+  max_estimate_error: 0.15        # [m] in flight: Kalman vs mocap beyond this -> E-STOP
+  max_preflight_tilt_deg: 10.0    # refuse takeoff if not sitting level
+  max_attitude_mismatch_deg: 5.0  # preflight: onboard IMU vs mocap roll/pitch (wrong body axes?)
+  max_flight_tilt_deg: 35.0       # in flight: mocap tilt beyond this -> E-STOP (lost control)
+  min_battery_v: 3.6              # [V] refuse takeoff below this (idle voltage)
+  estimator_timeout: 10.0         # [s] Kalman must converge within this after reset
+  geofence:                       # [m] mocap world; leaving it in flight -> E-STOP
+    x: [-1.5, 1.5]
+    y: [-1.5, 1.5]
+    z: [-0.2, 1.5]
+
+gamepad:
+  deadman_axis: 2          # hold this axis (Xbox LT) past the threshold the WHOLE flight
+  deadman_threshold: 0.5   # axis range -1 (released) .. 1 (pressed)
+  land_button: 0           # press to land (Xbox A)
+
+log_dir: "logs"            # per-flight CSV (relative to this package)
