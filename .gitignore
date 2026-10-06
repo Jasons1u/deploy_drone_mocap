@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+crazyflie/firmware/crazyflie-firmware/
+crazyflie/firmware/mocap_velctl/build/
+*.o
+.*.cmd
+
+
+crazyflie/logs/
+crazyflie/test/

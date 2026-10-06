@@ -1,0 +1,11 @@
+# Obstacles for crazyflie/fly_policy.py. The policy was trained on spheres of radius 0.08-0.12 m and sees the closest one.
+
+# Mocap-tracked: Motive rigid body streaming ID; sphere centre = rigid body pivot + offset (body frame, m).
+# Every listed body must be tracked before takeoff; the policy only engages while all of them are fresh.
+obstacles: 
+ - id: 25
+   radius: 0.10
+   offset: [0.0, 0.0, 0.0]
+
+# Virtual static spheres (world frame, m); keep centres at z 0.5-2.0 m within 1.5 m of the centre (trained range).
+static: []

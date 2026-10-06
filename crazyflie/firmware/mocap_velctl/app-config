@@ -1,0 +1,3 @@
+# Merged into cf21bl_defconfig by oot.mk: forces the mocap estimator and adds the velocity controller (stabilizer.controller=6).
+CONFIG_ESTIMATOR_OOT=y
+CONFIG_CONTROLLER_OOT=y

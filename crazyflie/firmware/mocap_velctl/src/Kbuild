@@ -1,0 +1,3 @@
+obj-y += velctl_math.o
+obj-y += estimator_mocap.o
+obj-y += controller_velocity.o
