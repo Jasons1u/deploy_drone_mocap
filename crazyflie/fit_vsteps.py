@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit the closed-loop velocity response of a `hover.py --plan vsteps` log: per step edge first order + delay, accel peaks."""
+"""Fit the closed-loop velocity response from `sysid_flight.py --plan vsteps` logs (--cascade: the model Isaac uses)."""
 
 from __future__ import annotations
 
@@ -11,11 +11,19 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.signal import savgol_filter
 
-RATE = 240.0
-MOCAP_LATENCY = 0.006   # [s] Motive exposure -> host arrival (5.5 ms in Motive + wired network), measured 2026-10-01
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # repo root: cfdeploy
+from cfdeploy.config import load as load_config  # noqa: E402
+from cfdeploy.drone_model import step_response  # noqa: E402
+
+CFG = load_config()
+RATE = CFG.mocap.rate                       # [Hz] mocap frame rate
+MOCAP_LATENCY = CFG.mocap.latency           # [s] exposure -> host arrival
+KV = tuple(CFG.drone_model.kv)              # firmware velCtl.kvX/kvY/kvZ during the sysID flights
+D_FB = CFG.drone_model.nominal.d_fb         # [s] mocap -> onboard alpha-beta estimate
 AXES = "xyz"
 
 
+# #### // Logs -> mocap kinematics and velocity-step edges // ####
 def load(run: Path):
     rd = lambda f: np.genfromtxt(run / f, delimiter=",", names=True, dtype=None, encoding=None)
     return rd("setpoints.csv"), rd("mocap.csv"), rd("cf_vel.csv")
@@ -50,6 +58,58 @@ def edges(sp):
     return out
 
 
+# #### // Joint fit of the cascade model over many edges (the model in config drone_model / Isaac VelCtlAction) // ####
+def cascade_edges(runs, axes):
+    """Per-edge measured window (t from the step, velocity on the step axis, v and a at the step) for the given axes."""
+    out = []
+    for run in runs:
+        sp, m, _ = load(run)
+        t, pos, vel, acc = mocap_kinematics(m)
+        for t_s, seg, ax, v_from, v_to, dur in edges(sp):
+            if ax not in axes:
+                continue
+            w = (t >= t_s) & (t <= t_s + min(dur, 1.2))
+            v0, a0 = np.interp(t_s, t, vel[:, ax]), np.interp(t_s, t, acc[:, ax])
+            out.append((t[w] - t_s, vel[w, ax], v0, a0, v_from, v_to))
+    return out
+
+
+def fit_cascade(edge_data, kv, fit_amax, fit_drag):
+    """Joint fit of (tau_a, d_cmd[, a_max][, drag]); edge_data: (t_rel, v_meas, v0, a0, v_from, v_to)."""
+    def unpack(x):
+        i = 2
+        a_max = x[i] if fit_amax else 20.0
+        i += fit_amax
+        drag = x[i] if fit_drag else 0.0
+        return x[0], x[1], a_max, drag
+
+    def resid(x):
+        tau_a, d_cmd, a_max, drag = unpack(x)
+        return np.concatenate([step_response(tr, v0, a0, vf, vt, kv, tau_a, d_cmd, a_max, drag, D_FB) - vm
+                               for tr, vm, v0, a0, vf, vt in edge_data])
+
+    x0 = [0.08, 0.03] + ([3.0] if fit_amax else []) + ([0.2] if fit_drag else [])
+    lo = [0.01, 0.0] + ([1.0] if fit_amax else []) + ([0.0] if fit_drag else [])
+    hi = [0.4, 0.15] + ([8.0] if fit_amax else []) + ([3.0] if fit_drag else [])
+    res = least_squares(resid, x0, bounds=(lo, hi), diff_step=1e-3)
+    tau_a, d_cmd, a_max, drag = unpack(res.x)
+    per_edge = [float(np.sqrt(np.mean((step_response(tr, v0, a0, vf, vt, kv, tau_a, d_cmd, a_max, drag, D_FB) - vm) ** 2)))
+                for tr, vm, v0, a0, vf, vt in edge_data]
+    return dict(tau_a=tau_a, d_cmd=d_cmd, a_max=a_max, drag=drag, rms=per_edge)
+
+
+def cascade_report(runs) -> None:
+    for name, axes, kv, fit_amax, fit_drag in (("xy", (0, 1), KV[0], True, False), ("z", (2,), KV[2], False, True)):
+        data = cascade_edges(runs, axes)
+        if not data:
+            continue
+        r = fit_cascade(data, kv, fit_amax, fit_drag)
+        print(f"{name}: {len(data)} edges, kv {kv} (fixed), tau_a {r['tau_a'] * 1e3:.0f} ms, d_cmd {r['d_cmd'] * 1e3:.0f} ms, "
+              f"a_max {r['a_max']:.2f} m/s^2, drag {r['drag']:.2f} 1/s; edge rms mean {np.mean(r['rms']):.3f} "
+              f"max {np.max(r['rms']):.3f} m/s")
+
+
+# #### // Diagnostics: per-edge first-order fits, attitude tracking, onboard estimate lag // ####
 def first_order(t, t_s, v0, slope, v_to, k, tau, d, a_max):
     """Pre-step trend v0 + slope*(t - t_s) until t_s + d, then first order toward k*v_to with an acceleration limit."""
     dt = 0.0005
@@ -79,68 +139,6 @@ def fit_edge(t, v, t_s, v_from, v_to, dur, fit_gain, fit_amax):
     res = least_squares(lambda x: first_order(tw, t_s, v0, slope, v_to, *unpack(x)) - vw, x0, bounds=(lo, hi))
     k, tau, d, a_max = unpack(res.x)
     return dict(k=k, tau=tau, d=d, a_max=a_max, rms=float(np.sqrt(np.mean(res.fun ** 2))), v0=v0, slope=slope)
-
-
-KV = (4.0, 4.0, 6.0)          # firmware velCtl.kvX/kvY/kvZ during the sysID flights
-D_FB = 0.020                  # [s] feedback delay: mocap -> onboard alpha-beta estimate (23 ms round trip minus downlink)
-
-
-def cascade(t_rel, v0, a0, v_from, v_to, kv, tau_a, d_cmd, a_max, drag, dt=0.0025):
-    """Firmware structure: a_cmd = kv*(cmd(t-d_cmd) - v(t-D_FB)) capped, a lags a_cmd by tau_a, v' = a - drag*v; t=0 at the step."""
-    n_pre, n = int(round(0.3 / dt)), int(round(t_rel[-1] / dt)) + 2
-    hist = int(round(D_FB / dt)) + 1
-    vs, v, a, out = [v0] * hist, v0, a0, np.empty(n)
-    for k in range(-n_pre, n):
-        frac = min(max((k * dt - d_cmd) / dt + 1.0, 0.0), 1.0)   # sub-step switch: continuous in d_cmd
-        cmd = v_from + (v_to - v_from) * frac
-        a_cmd = np.clip(kv * (cmd - vs[-hist]), -a_max, a_max)
-        a += (a_cmd - a) * dt / tau_a
-        v += (a - drag * v) * dt
-        if k < 0:
-            v, a = v0, a0
-        vs.append(v)
-        if k >= 0:
-            out[k] = v
-    return np.interp(t_rel, np.arange(n) * dt, out)
-
-
-def fit_cascade(edge_data, kv, fit_amax, fit_drag):
-    """Joint fit over many edges of (tau_a, d_cmd[, a_max][, drag]); edge_data: (t_rel, v_meas, v0, a0, v_from, v_to)."""
-    def unpack(x):
-        i = 2
-        a_max = x[i] if fit_amax else 20.0
-        i += fit_amax
-        drag = x[i] if fit_drag else 0.0
-        return x[0], x[1], a_max, drag
-
-    def resid(x):
-        tau_a, d_cmd, a_max, drag = unpack(x)
-        return np.concatenate([cascade(tr, v0, a0, vf, vt, kv, tau_a, d_cmd, a_max, drag) - vm
-                               for tr, vm, v0, a0, vf, vt in edge_data])
-
-    x0 = [0.08, 0.03] + ([3.0] if fit_amax else []) + ([0.2] if fit_drag else [])
-    lo = [0.01, 0.0] + ([1.0] if fit_amax else []) + ([0.0] if fit_drag else [])
-    hi = [0.4, 0.15] + ([8.0] if fit_amax else []) + ([3.0] if fit_drag else [])
-    res = least_squares(resid, x0, bounds=(lo, hi), diff_step=1e-3)
-    tau_a, d_cmd, a_max, drag = unpack(res.x)
-    per_edge = [float(np.sqrt(np.mean((cascade(tr, v0, a0, vf, vt, kv, tau_a, d_cmd, a_max, drag) - vm) ** 2)))
-                for tr, vm, v0, a0, vf, vt in edge_data]
-    return dict(tau_a=tau_a, d_cmd=d_cmd, a_max=a_max, drag=drag, rms=per_edge)
-
-
-def cascade_edges(runs, axes):
-    """Per-edge measured window (t from the step, velocity on the step axis, v and a at the step) for the given axes."""
-    out = []
-    for run in runs:
-        sp, m, _ = load(run)
-        t, pos, vel, acc = mocap_kinematics(m)
-        for t_s, seg, ax, v_from, v_to, dur in edges(sp):
-            if ax not in axes:
-                continue
-            w = (t >= t_s) & (t <= t_s + min(dur, 1.2))
-            v0, a0 = np.interp(t_s, t, vel[:, ax]), np.interp(t_s, t, acc[:, ax])
-            out.append((t[w] - t_s, vel[w, ax], v0, a0, v_from, v_to))
-    return out
 
 
 def estimator_lag(t, v_mocap, tel, axis):
@@ -177,24 +175,9 @@ def attitude_report(run: Path, sp):
     return out
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("runs", nargs="+", type=Path, help="log dirs from hover.py --plan vsteps")
-    ap.add_argument("--cascade", action="store_true", help="joint fit of the firmware-structured cascade model")
-    args = ap.parse_args(argv)
-    if args.cascade:
-        for name, axes, kv, fit_amax, fit_drag in (("xy", (0, 1), KV[0], True, False), ("z", (2,), KV[2], False, True)):
-            data = cascade_edges(args.runs, axes)
-            if not data:
-                continue
-            r = fit_cascade(data, kv, fit_amax, fit_drag)
-            print(f"{name}: {len(data)} edges, kv {kv} (fixed), tau_a {r['tau_a'] * 1e3:.0f} ms, d_cmd {r['d_cmd'] * 1e3:.0f} ms, "
-                  f"a_max {r['a_max']:.2f} m/s^2, drag {r['drag']:.2f} 1/s; edge rms mean {np.mean(r['rms']):.3f} "
-                  f"max {np.max(r['rms']):.3f} m/s")
-        return 0
-
+def edge_report(runs) -> None:
     rows = []
-    for run in args.runs:
+    for run in runs:
         sp, m, tel = load(run)
         t, pos, vel, acc = mocap_kinematics(m)
         print(f"\n{run.name}")
@@ -230,6 +213,18 @@ def main(argv=None) -> int:
         fmt = lambda xs, k: f"{np.mean([x[k] for x in xs]) * (1e3 if k in ('tau', 'd') else 1):.3g}" if xs else "-"
         print(f"  {ax}: tau accel {fmt(acc_e, 'tau')} ms / brake {fmt(brk, 'tau')} ms; delay {fmt(r, 'd')} ms; "
               f"gain {fmt(acc_e, 'k')}; accel limit (|step| >= 0.9) {fmt(big, 'a_max')} m/s^2, peak |a| {fmt(big, 'peak')}")
+
+
+# #### // CLI // ####
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("runs", nargs="+", type=Path, help="log dirs from sysid_flight.py --plan vsteps")
+    ap.add_argument("--cascade", action="store_true", help="joint fit of the firmware-structured cascade model")
+    args = ap.parse_args(argv)
+    if args.cascade:
+        cascade_report(args.runs)
+    else:
+        edge_report(args.runs)
     return 0
 
 

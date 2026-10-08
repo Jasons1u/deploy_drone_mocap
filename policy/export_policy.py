@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Export an rsl_rl ActorCritic checkpoint's actor + obs normalizer to .npz and check it against act_inference.
-
-    conda run -n drone python3 policy/export_policy.py <run_dir>/model_999.pt policy/models/<name>.npz --critic-dim 96
-"""
+"""Export an rsl_rl ActorCritic checkpoint's actor + obs normalizer to .npz (with training conventions) and verify it."""
 
 import argparse
 import sys
@@ -13,12 +10,14 @@ import torch
 from rsl_rl.modules import ActorCritic
 from tensordict import TensorDict
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from mlp_policy import MlpPolicy  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # repo root: cfdeploy
+from cfdeploy.mlp_policy import MlpPolicy  # noqa: E402
 
 
+# #### // Checkpoint -> npz (actor weights, normalizer, training metadata) -> numpy vs torch check // ####
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, epilog="e.g. policy/export_policy.py <run>/model_1499.pt policy/models/<name>.npz "
+                                 "--critic-dim 96 --task Isaac_SafeCF_Moving_SAFEPPO_CF21BL")
     ap.add_argument("checkpoint", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--critic-dim", type=int, required=True, help="critic obs dim of the training env (to rebuild the module)")

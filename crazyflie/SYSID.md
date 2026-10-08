@@ -1,6 +1,6 @@
 # Velocity-loop sysID: CF2.1 Brushless + `mocap_velctl` firmware (2026-10-01)
 
-Flights with `hover.py --plan vsteps` and attitude kp 9. Fits are from `fit_vsteps.py`; `--cascade` fits the model used in Isaac.
+Flights with `sysid_flight.py --plan vsteps` (was `hover.py`) and attitude kp 9. Fits are from `fit_vsteps.py`; `--cascade` fits the model used in Isaac.
 
 ## Configuration this model is valid for
 
@@ -48,7 +48,7 @@ The first-order delay shrinks to ~57 ms on 1 m/s steps (tilt builds faster), whi
 ## Findings
 
 - **Attitude kp 6 → 9:** xy delay 130 → ~97 ms, pitch lag 104 → 86 ms, accel cap +12%, less cross-coupling. Roll briefly showed a 5.8 Hz component, so going past 9 needs care.
-- **Yaw torque imbalance:** in hover the yaw loop holds 7–10% of thrust as diagonal differential (m1/m3 work harder). At spin-up it saturates the motors, so a slow takeoff tips the drone. `hover.py` launches with a ≤1 s level full-thrust burst. Check the props and motors (M2 pinned at 100% while its corner dropped).
+- **Yaw torque imbalance:** in hover the yaw loop holds 7–10% of thrust as diagonal differential (m1/m3 work harder). At spin-up it saturates the motors, so a slow takeoff tips the drone. Every flight script launches with a short level burst (`cfdeploy/flight.py` Takeoff, `launch` in `config/deploy.yaml`); a full-thrust burst left no motor headroom and flipped 13 of 22 policy launches (M2/M4 corner, its motor pinned at 100%), so it now runs at 65% and hands over 3 cm up. Check the props and motors (M2 pinned at 100% while its corner dropped).
 - **IMU vs body:** −2.3° roll / +1.4° pitch offset. `imu_sensors.imuPhi/imuTheta` could correct it.
 
 ## Logs (`crazyflie/logs/`)

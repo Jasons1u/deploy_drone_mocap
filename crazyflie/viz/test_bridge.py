@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Headless check of rviz_bridge.py: fake fly_policy state in, markers / TF / interactive target out, drag -> UDP target.
-
-    env -i HOME=$HOME bash -c 'source /opt/ros/humble/setup.bash && /usr/bin/python3 crazyflie/viz/test_bridge.py'
-"""
+"""Headless check of rviz_bridge.py (system Python + ROS Humble): fake state in, markers / TF / handles out, drags -> UDP."""
 
 import json
 import socket

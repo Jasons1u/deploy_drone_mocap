@@ -7,4 +7,4 @@ crazyflie/firmware/mocap_velctl/build/
 
 
 crazyflie/logs/
-crazyflie/test/
+tests/
