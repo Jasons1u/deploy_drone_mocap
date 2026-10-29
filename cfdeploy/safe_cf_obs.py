@@ -9,22 +9,22 @@ import numpy as np
 
 from cfdeploy.config import load
 
-# #### // Training constants (config/deploy.yaml training section; must match the Isaac safe_cf env) // ####
+# #### // Training constants (config/deploy.yaml training section; must match Isaac config/crazyflie.yaml) // ####
 T = load().training
 FT = 0.3048
-ARENA_RADIUS = T.arena_radius_ft * FT           # safe_cf_env_cfg.ARENA_RADIUS
-ARENA_HEIGHT = T.arena_height_ft * FT           # safe_cf_env_cfg.ARENA_HEIGHT
-TARGET_RADIUS = T.target_radius                 # safe_cf_env_cfg.SAMPLE_RADIUS: targets/spawns were drawn inside this cylinder
-TARGET_Z = tuple(T.target_z)                    # safe_cf_env_cfg.SAMPLE_Z
-DRONE_RADIUS = T.drone_radius                   # SafeCFCommandCfg.drone_radius
-UNSAFE_MARGIN = T.unsafe_margin                 # SafeCFCommandCfg.unsafe_margin
-BOUNDARY_UNSAFE_MARGIN = T.boundary_unsafe_margin
-TARGET_KEEP_OUT_EXTRA = T.target_keep_out_extra  # SafeCFCommandCfg.spawn_clearance
-V_MAX = np.array(T.v_max, float)                # VelCtlActionCfg.v_max: action [-1, 1] -> m/s
+ARENA_RADIUS = T.arena_radius_ft * FT           # arena.radius_ft
+ARENA_HEIGHT = T.arena_height_ft * FT           # arena.height_ft
+TARGET_RADIUS = T.target_radius                 # sampling.radius: targets/spawns were drawn inside this cylinder
+TARGET_Z = tuple(T.target_z)                    # sampling.z_range
+DRONE_RADIUS = T.drone_radius                   # drone.radius
+UNSAFE_MARGIN = T.unsafe_margin                 # obstacles.unsafe_margin
+BOUNDARY_UNSAFE_MARGIN = T.boundary_unsafe_margin  # arena.boundary_unsafe_margin
+TARGET_KEEP_OUT_EXTRA = T.target_keep_out_extra  # obstacles.spawn_clearance
+V_MAX = np.array(T.v_max, float)                # rom.v_max: action [-1, 1] -> m/s
 OBSTACLE_Z = tuple(T.obstacle_z)                # obstacle centres were sampled in this z range ...
 OBSTACLE_R_MAX = T.obstacle_r_max               # ... within ~this of the arena centre
-OBSTACLE_RADIUS = tuple(T.obstacle_radius)
-SLOT_CLEARANCE = tuple(T.slot_clearance)        # mdp.nearest_obstacles_geom clearance_range
+OBSTACLE_RADIUS = tuple(T.obstacle_radius)      # obstacles.radius_range
+SLOT_CLEARANCE = tuple(T.slot_clearance)        # observations.slot_clearance (mdp.nearest_obstacles_geom clearance_range)
 BASE_DIM, PER_OBSTACLE = 19, {False: 4, True: 7}   # pos 3 + vel 3 + height 1 + actions 9 + wall 3; dir 3 + clearance 1 (+ vel 3)
 
 

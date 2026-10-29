@@ -17,7 +17,7 @@ from cfdeploy.mlp_policy import MlpPolicy  # noqa: E402
 # #### // Checkpoint -> npz (actor weights, normalizer, training metadata) -> numpy vs torch check // ####
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, epilog="e.g. policy/export_policy.py <run>/model_1499.pt policy/models/<name>.npz "
-                                 "--critic-dim 96 --task Isaac_SafeCF_Moving_SAFEPPO_CF21BL")
+                                 "--critic-dim 100 --task Isaac_SafeCF_SAFEPPO_CF21BL")
     ap.add_argument("checkpoint", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--critic-dim", type=int, required=True, help="critic obs dim of the training env (to rebuild the module)")
@@ -59,7 +59,8 @@ def main(argv=None) -> int:
     if env_yaml.is_file():
         import yaml
         hc = ((yaml.unsafe_load(env_yaml.read_text()) or {}).get("commands") or {}).get("hover_clf") or {}
-        vertical = float(bool(hc.get("obstacle_vertical_motion", False)))
+        # pre-attack runs drifted in the plane; runs with attacks but no key are after the key was dropped (always 3-D)
+        vertical = float(bool(hc.get("obstacle_vertical_motion", "attack_prob" in hc)))
         for key in ("obstacle_speed_range", "obstacle_turn_interval", "attack_prob", "attack_speed_range"):
             if key in hc:
                 arrays[f"meta_{key}"] = np.array(str(hc[key]))

@@ -73,6 +73,11 @@ def set_firmware_params(cfg: Section, items) -> Section:
     return cfg
 
 
+def policy_path(cfg: Section, cli_value) -> str:
+    """--policy as given (relative to the current folder), else policy_flight.policy (relative to the repo root)."""
+    return str(Path(cli_value).resolve() if cli_value else repo_path(cfg.policy_flight.policy))
+
+
 def firmware_params(cfg: Section) -> dict:
     """drone.firmware_params as {"group.name": value}."""
     return {f"{g}.{k}": v for g, group in cfg.drone.firmware_params.items() for k, v in group.items()}

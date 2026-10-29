@@ -66,6 +66,7 @@ class NatNetClient:
         self.app_version = self.natnet_version = None
         self.frames = 0
         self.last: Frame | None = None
+        self.tracked: dict[int, tuple[Body, float]] = {}   # body id -> (last tracked pose, its arrival)
         self._stop = threading.Event()
         self._thread = None
         self._sock = None
@@ -91,11 +92,16 @@ class NatNetClient:
             self._sock.close()
 
     def body(self, body_id: int) -> tuple[Body | None, float]:
-        """Latest pose of body_id and its age [s] (inf if never seen or not tracked in the latest frame)."""
-        f = self.last
-        if f is None or body_id not in f.bodies or not f.bodies[body_id].valid:
-            return None, float("inf")
-        return f.bodies[body_id], time.monotonic() - f.arrival
+        """Last tracked pose of body_id and its age [s] (None, inf if never tracked): a dropout ages the pose, the caller decides."""
+        b = self.tracked.get(body_id)
+        return (None, float("inf")) if b is None else (b[0], time.monotonic() - b[1])
+
+    def ingest(self, frame: Frame) -> None:
+        self.last = frame
+        self.frames += 1
+        self.tracked.update({b.id: (b, frame.arrival) for b in frame.bodies.values() if b.valid})
+        if self.on_frame:
+            self.on_frame(frame)
 
     def _handshake(self, timeout: float) -> None:
         payload = bytearray(271)
@@ -138,11 +144,7 @@ class NatNetClient:
                 number, bodies = parse_frame(data, self.natnet_version)
             except (struct.error, ValueError):
                 continue
-            frame = Frame(number, {b.id: b for b in bodies}, now)
-            self.last = frame
-            self.frames += 1
-            if self.on_frame:
-                self.on_frame(frame)
+            self.ingest(Frame(number, {b.id: b for b in bodies}, now))
 
 
 def route_ip(server_ip: str) -> str:

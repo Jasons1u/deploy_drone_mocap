@@ -25,6 +25,8 @@ static float maxDelay = 0.7f;     // [periods] radio delay tolerated before a ga
 static float clockGain = 0.01f;   // per frame: how fast the slot clock follows later arrivals (clock drift)
 static float minStep = 0.0015f;   // [m] per-frame motion above which the position decides ambiguous frame counts
 static float yawGain = 0.05f;     // per mocap sample: how fast the yaw offset follows mocap
+static float yawTilt = 30.0f;     // [deg] the yaw offset follows mocap only below this tilt (yaw is ill-defined near 90 deg)
+static float gyroGate = 200.0f;   // [deg/s] roll/pitch rate above which the accelerometer (thrust, not gravity) is left out; 0 = off
 
 // --- inputs ---
 static Axis3f gyro;
@@ -72,6 +74,9 @@ static void onPose(const poseMeasurement_t *pose, uint64_t now)
   onPosition(pose->pos, now);
 
   const quaternion_t *q = &pose->quat;
+  if (yawAligned && 1.0f - 2.0f * (q->x * q->x + q->y * q->y) < cosf(yawTilt / DEG_PER_RAD)) {
+    return;
+  }
   const float mocapYawDeg = DEG_PER_RAD * atan2f(2.0f * (q->w * q->z + q->x * q->y),
                                                  1.0f - 2.0f * (q->y * q->y + q->z * q->z));
   const float err = wrap180(mocapYawDeg - (imuYawDeg + yawOffsetDeg));
@@ -121,7 +126,9 @@ void estimatorOutOfTree(state_t *state, const stabilizerStep_t stabilizerStep)
     return;
   }
 
-  sensfusion6UpdateQ(gyro.x, gyro.y, gyro.z, acc.x, acc.y, acc.z, ATTITUDE_DT);
+  const bool spinning = gyroGate > 0.0f && sqrtf(gyro.x * gyro.x + gyro.y * gyro.y) > gyroGate;
+  sensfusion6UpdateQ(gyro.x, gyro.y, gyro.z, spinning ? 0.0f : acc.x, spinning ? 0.0f : acc.y, spinning ? 0.0f : acc.z,
+                     ATTITUDE_DT);
 
   // Attitude in the legacy CF2 convention (pitch inverted), as the controllers expect.
   float roll, pitch, yaw;
@@ -157,6 +164,8 @@ PARAM_ADD(PARAM_FLOAT, maxDelay, &maxDelay)
 PARAM_ADD(PARAM_FLOAT, clockGain, &clockGain)
 PARAM_ADD(PARAM_FLOAT, minStep, &minStep)
 PARAM_ADD(PARAM_FLOAT, yawGain, &yawGain)
+PARAM_ADD(PARAM_FLOAT, yawTilt, &yawTilt)
+PARAM_ADD(PARAM_FLOAT, gyroGate, &gyroGate)
 PARAM_GROUP_STOP(mocapEst)
 
 LOG_GROUP_START(mocapEst)

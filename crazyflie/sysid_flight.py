@@ -7,6 +7,7 @@ import argparse
 import math
 import sys
 import time
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # repo root: cfdeploy
@@ -59,86 +60,124 @@ def pulse_past_soft_limits(c, p, v, p0) -> bool:
 
 # #### // Flight loop: launch -> climb -> plan segments -> land; every tick checks the E-STOP conditions // ####
 def fly(cf, cfg, mocap, tel, kb, pad, p0, yaw0, sp_rows, schedule, ceiling, box, clock=time, mocap_at=None) -> str:
-    x0, y0, z0 = p0
-    takeoff = Takeoff(cfg.launch, p0, schedule[0][2][2], clock.monotonic())
-    limit = box_limit(p0, box, ceiling)
-    stage, seg_i, seg_t0, hold, landing = "launch", 0, None, None, None
-    period, next_t = cfg.radio.setpoint_period, clock.monotonic()
-    while True:
-        try:
-            now = clock.monotonic()
-            body, age = mocap.body(cfg.mocap.drone_body)
-            reason = estop_reason(cfg, kb, pad, body, age, tel, limit, takeoff.tilt_guard_armed(now), mocap_at)
-            if reason:
-                cf.commander.send_stop_setpoint()
-                cf.supervisor.send_emergency_stop()
-                return f"E-STOP: {reason}"
-            p = body.position
-            mode, target, vcmd, kind, row_seg = "pos", None, (0.0, 0.0, 0.0), stage, -1
+    return PlanFlight(cf, cfg, mocap, tel, kb, pad, p0, yaw0, sp_rows, schedule, ceiling, box, clock, mocap_at).run()
 
-            if stage == "launch":
-                if takeoff.lifted_off(now, p):
-                    stage = "takeoff"
-                elif takeoff.timed_out(now):
-                    cf.commander.send_stop_setpoint()
-                    return f"no lift-off within {cfg.launch.timeout:.1f} s (z {p[2] - z0:+.3f} m): motors stopped"
-                else:
-                    mode = "thrust"
-            if stage == "takeoff":
-                target, done = takeoff.climb(now)
-                if done:
-                    stage = "plan"
-            if stage == "plan" and (kb.land or seg_i >= len(schedule)):
-                stage, landing, hold = "land", Landing(cfg.landing, now, p[2], z0), (p[0], p[1])
-                print("  landing")
-            if stage == "plan":
-                kind, dur, val = schedule[seg_i]
-                row_seg = seg_i
-                if seg_t0 is None:
-                    seg_t0 = now
-                    if kind == "freeze":
-                        for k in ("kiX", "kiY", "kiZ"):
-                            cf.param.set_value(f"velCtl.{k}", 0.0)
-                        print("  integrators frozen (ki = 0)")
-                    elif kind == "hold":
-                        hold = val
-                    elif kind == "hold_here":
-                        hold = tuple(p)
-                elapsed = now - seg_t0
-                if kind == "vel":
-                    mode, vcmd = "vel", val
-                    v_est = [tel.get(f"stateEstimate.v{a}", 0.0) for a in "xyz"]
-                    if any(c != 0.0 for c in val) and pulse_past_soft_limits(cfg.sysid_flight, p, v_est, p0):
-                        print(f"  soft limit: segment {seg_i} ended after {elapsed:.2f} s")
-                        elapsed = dur
-                else:
-                    target = hold
-                if elapsed >= dur:
-                    seg_i, seg_t0 = seg_i + 1, None
-            if stage == "land":
-                target = (hold[0], hold[1], landing.z(now))
-                done = landing.outcome(now, p)
-                if done:
-                    return done
 
-            if mode == "thrust":
-                thrust = takeoff.thrust
-                cf.commander.send_setpoint(0.0, 0.0, 0.0, thrust)
-                sp_rows.append((now, kind, row_seg, mode, math.nan, math.nan, math.nan, math.nan, math.nan, thrust))
-            elif mode == "vel":
-                cf.commander.send_velocity_world_setpoint(*vcmd, 0.0)
-                sp_rows.append((now, kind, row_seg, mode, math.nan, math.nan, math.nan, *vcmd))
-            else:
-                cf.commander.send_position_setpoint(*target, yaw0)
-                sp_rows.append((now, kind, row_seg, mode, *target, math.nan, math.nan, math.nan))
-            next_t += period
-            clock.sleep(max(0.0, next_t - clock.monotonic()))
-        except KeyboardInterrupt:
-            if stage != "land":
-                kb.land = True
-                print("  Ctrl+C: landing (Ctrl+C again = E-STOP)")
-            else:
-                kb.kill = True
+class PlanFlight:
+    def __init__(self, cf, cfg, mocap, tel, kb, pad, p0, yaw0, sp_rows, schedule, ceiling, box, clock=time, mocap_at=None):
+        self.cf, self.cfg, self.mocap, self.tel, self.kb, self.pad = cf, cfg, mocap, tel, kb, pad
+        self.p0, self.yaw0, self.sp_rows, self.schedule, self.clock, self.mocap_at = p0, yaw0, sp_rows, schedule, clock, mocap_at
+        self.takeoff = Takeoff(cfg.launch, p0, schedule[0][2][2], clock.monotonic())
+        self.limit = box_limit(p0, box, ceiling)
+        self.stage, self.seg_i, self.seg_t0, self.hold, self.landing = "launch", 0, None, None, None
+
+    def run(self) -> str:
+        period, next_t = self.cfg.radio.setpoint_period, self.clock.monotonic()
+        while True:
+            try:
+                outcome = self.tick()
+                if outcome:
+                    return outcome
+                next_t += period
+                self.clock.sleep(max(0.0, next_t - self.clock.monotonic()))
+            except KeyboardInterrupt:
+                if self.stage != "land":
+                    self.kb.land = True
+                    print("  Ctrl+C: landing (Ctrl+C again = E-STOP)")
+                else:
+                    self.kb.kill = True
+
+    def tick(self) -> str | None:
+        """One setpoint: E-STOP checks, then each stage in order; returns the outcome when the flight ends."""
+        now = self.clock.monotonic()
+        body, age = self.mocap.body(self.cfg.mocap.drone_body)
+        reason = self.estop(now, body, age)
+        if reason:
+            self.cf.commander.send_stop_setpoint()
+            self.cf.supervisor.send_emergency_stop()
+            return f"E-STOP: {reason}"
+        p = body.position
+        sp = types.SimpleNamespace(mode="pos", target=None, vcmd=(0.0, 0.0, 0.0), yawrate=0.0, kind=self.stage, row_seg=-1)
+        if self.stage == "launch":
+            outcome = self.launch(now, p, sp)
+            if outcome:
+                return outcome
+        if self.stage == "takeoff":
+            self.climb(now, sp)
+        if self.stage == "plan" and (self.kb.land or self.seg_i >= len(self.schedule)):
+            self.start_landing(now, p)
+        if self.stage == "plan":
+            self.plan_segment(now, p, sp)
+        if self.stage == "land":
+            outcome = self.descend(now, p, sp)
+            if outcome:
+                return outcome
+        self.send(now, sp)
+        return None
+
+    def estop(self, now, body, age) -> str | None:
+        return estop_reason(self.cfg, self.kb, self.pad, body, age, self.tel, self.limit, self.takeoff.tilt_guard_armed(now), self.mocap_at)
+
+    def launch(self, now, p, sp) -> str | None:
+        if self.takeoff.lifted_off(now, p):
+            self.stage = "takeoff"
+        elif self.takeoff.timed_out(now):
+            self.cf.commander.send_stop_setpoint()
+            return f"no lift-off within {self.cfg.launch.timeout:.1f} s (z {p[2] - self.p0[2]:+.3f} m): motors stopped"
+        else:
+            sp.mode = "thrust"
+        return None
+
+    def climb(self, now, sp) -> None:
+        sp.target, done = self.takeoff.climb(now)
+        if done:
+            self.stage = "plan"
+
+    def start_landing(self, now, p) -> None:
+        self.stage, self.landing, self.hold = "land", Landing(self.cfg.landing, now, p[2], self.p0[2]), (p[0], p[1])
+        print("  landing")
+
+    def plan_segment(self, now, p, sp) -> None:
+        """Current segment: hold a point, freeze the integrators, or a velocity pulse cut short at the soft limits."""
+        kind, dur, val = self.schedule[self.seg_i]
+        sp.kind, sp.row_seg = kind, self.seg_i
+        if self.seg_t0 is None:
+            self.seg_t0 = now
+            if kind == "freeze":
+                for k in ("kiX", "kiY", "kiZ"):
+                    self.cf.param.set_value(f"velCtl.{k}", 0.0)
+                print("  integrators frozen (ki = 0)")
+            elif kind == "hold":
+                self.hold = val
+            elif kind == "hold_here":
+                self.hold = tuple(p)
+        elapsed = now - self.seg_t0
+        if kind == "vel":
+            sp.mode, sp.vcmd = "vel", val
+            v_est = [self.tel.get(f"stateEstimate.v{a}", 0.0) for a in "xyz"]
+            if any(c != 0.0 for c in val) and pulse_past_soft_limits(self.cfg.sysid_flight, p, v_est, self.p0):
+                print(f"  soft limit: segment {self.seg_i} ended after {elapsed:.2f} s")
+                elapsed = dur
+        else:
+            sp.target = self.hold
+        if elapsed >= dur:
+            self.seg_i, self.seg_t0 = self.seg_i + 1, None
+
+    def descend(self, now, p, sp) -> str | None:
+        sp.target = (self.hold[0], self.hold[1], self.landing.z(now))
+        return self.landing.outcome(now, p)
+
+    def send(self, now, sp) -> None:
+        if sp.mode == "thrust":
+            thrust = self.takeoff.thrust
+            self.cf.commander.send_setpoint(0.0, 0.0, 0.0, thrust)
+            self.sp_rows.append((now, sp.kind, sp.row_seg, sp.mode, math.nan, math.nan, math.nan, math.nan, math.nan, thrust))
+        elif sp.mode == "vel":
+            self.cf.commander.send_velocity_world_setpoint(*sp.vcmd, sp.yawrate)
+            self.sp_rows.append((now, sp.kind, sp.row_seg, sp.mode, math.nan, math.nan, math.nan, *sp.vcmd))
+        else:
+            self.cf.commander.send_position_setpoint(*sp.target, self.yaw0)
+            self.sp_rows.append((now, sp.kind, sp.row_seg, sp.mode, *sp.target, math.nan, math.nan, math.nan))
 
 
 # #### // One flight: preflight, arm, plan, logs // ####

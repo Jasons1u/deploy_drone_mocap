@@ -1,4 +1,4 @@
-// Out-of-tree controller: velocity (or position) setpoint -> acceleration -> tilt + thrust [N] -> stock attitude PID.
+// Out-of-tree controller: velocity (or position) setpoint -> acceleration -> tilt + thrust [N] -> stock attitude PID; legacy rate setpoints skip to the rate PID.
 
 #include <math.h>
 #include <stdbool.h>
@@ -47,6 +47,7 @@ static float vRefLog[3];
 static float aCmdLog[3];
 static float thrustN;
 static float yawCmd;
+static float rateLog[3];   // rate PID setpoint in the body frame (p, q, r) [deg/s]
 
 static float capAngle(float angle)
 {
@@ -179,9 +180,23 @@ void controllerOutOfTree(control_t *control, const setpoint_t *setpoint, const s
     control->thrust = clampf(thrustN / powerDistributionGetMaxThrust() * UINT16_MAX, 0.0f, UINT16_MAX);
   }
 
-  attitudeControllerCorrectAttitudePID(state->attitude.roll, state->attitude.pitch, state->attitude.yaw,
-                                       attitudeDesired.roll, attitudeDesired.pitch, attitudeDesired.yaw,
-                                       &rateDesired.roll, &rateDesired.pitch, &rateDesired.yaw);
+  const bool rateMode = manualTilt && setpoint->mode.roll == modeVelocity && setpoint->mode.pitch == modeVelocity;
+  if (rateMode) {
+    // flightmode.stabModeRoll/Pitch = 0: body rates straight to the rate PID; yaw desired follows the drone for the hand-back
+    rateDesired.roll = setpoint->attitudeRate.roll;
+    rateDesired.pitch = setpoint->attitudeRate.pitch;
+    rateDesired.yaw = setpoint->attitudeRate.yaw;
+    attitudeDesired.yaw = state->attitude.yaw;
+    attitudeControllerResetRollAttitudePID(state->attitude.roll);
+    attitudeControllerResetPitchAttitudePID(state->attitude.pitch);
+  } else {
+    attitudeControllerCorrectAttitudePID(state->attitude.roll, state->attitude.pitch, state->attitude.yaw,
+                                         attitudeDesired.roll, attitudeDesired.pitch, attitudeDesired.yaw,
+                                         &rateDesired.roll, &rateDesired.pitch, &rateDesired.yaw);
+  }
+  rateLog[0] = rateDesired.roll;
+  rateLog[1] = -rateDesired.pitch;   // legacy pitch is inverted
+  rateLog[2] = rateDesired.yaw;
   attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
                                    rateDesired.roll, rateDesired.pitch, rateDesired.yaw);
   attitudeControllerGetActuatorOutput(&control->roll, &control->pitch, &control->yaw);
@@ -222,4 +237,7 @@ LOG_ADD(LOG_FLOAT, thrustN, &thrustN)
 LOG_ADD(LOG_FLOAT, yawCmd, &yawCmd)
 LOG_ADD(LOG_FLOAT, rollDes, &attitudeDesired.roll)
 LOG_ADD(LOG_FLOAT, pitchDes, &attitudeDesired.pitch)
+LOG_ADD(LOG_FLOAT, rateP, &rateLog[0])
+LOG_ADD(LOG_FLOAT, rateQ, &rateLog[1])
+LOG_ADD(LOG_FLOAT, rateR, &rateLog[2])
 LOG_GROUP_STOP(velCtl)

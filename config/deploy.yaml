@@ -53,7 +53,7 @@ landing:
 
 # #### // Preflight + E-STOP thresholds // ####
 preflight:
-  min_vbat: 3.85                # [V] resting; at 3.78 V the burst lifted only 4-6 cm in 1 s
+  min_vbat: 3.6                 # [V] resting; at 3.78 V the burst lifted only 4-6 cm in 1 s
   max_mocap_age: 0.1            # [s]
   max_onboard_age_ms: 100
   max_position_error: 0.02      # [m] onboard estimate vs mocap
@@ -63,7 +63,7 @@ preflight:
 
 safety:
   max_tilt: 60.0                # [deg] airborne flip guard (off during launch); 180 = off
-  mocap_timeout: 0.25           # [s] no drone pose from Motive -> E-STOP
+  mocap_timeout: 0.1            # [s] since Motive last tracked the drone (10 setpoints, ~24 frames) -> E-STOP
   onboard_mocap_timeout_ms: 250 # drone has had no pose for this long -> E-STOP
   telemetry_timeout: 0.5        # [s] newest onboard sample this old (downlink delay included) -> E-STOP
   max_estimate_error: 0.10      # [m] onboard estimate vs mocap at the estimate's own sample time
@@ -77,7 +77,7 @@ gamepad:
     hold_threshold: 0.0         # in flight, LT below this = E-STOP (hysteresis)
     arm_hold: 1.5               # [s]
     arm_window: 120.0           # [s] give up waiting
-  buttons: {a: 0, b: 1, y: 3, rb: 5}
+  buttons: {a: 0, b: 1, x: 2, y: 3, rb: 5}
   axes: {lx: 0, ly: 1, rx: 3, ry: 4}
 
 sticks:
@@ -125,6 +125,31 @@ sysid_flight:
   hover_ceiling_margin: 0.4     # [m] E-STOP above takeoff + height + this (hover) ...
   vsteps_ceiling_margin: 0.1    # [m] ... or takeoff + z_max + this (vsteps)
 
+# #### // fly_rates.py (rate mode: props-off bench, rate/thrust doublet sysID, mj-nlp flip tape) // ####
+rate_flight:
+  height: 1.0                   # [m] rsteps hold height above takeoff
+  flip_height: 1.5              # [m] flip plan: climb this far above takeoff, then the sticks (X flips where it is)
+  settle: 4.0                   # [s] rsteps: hold before the trim (integrators settle)
+  trim_time: 1.0                # [s] hover thrust = median velCtl.thrustN over this; tape thrust scales with it
+  trim_range: [0.85, 1.15]      # hover thrust / (mass g) outside this -> land instead
+  axes: pqrT                    # rsteps: doublet columns in order (body rates p q r, collective T)
+  doublets:                     # [amplitude, seconds per half]: rad/s for p q r (peak tilt amp * dur), fraction of hover for T
+    p: [[1.5, 0.15], [3.0, 0.12], [5.0, 0.1]]
+    q: [[1.5, 0.15], [3.0, 0.12], [5.0, 0.1]]
+    r: [[0.3, 0.4], [0.45, 0.3]]   # yaw torque tops out near 7e-4 N m (velCtl.yawLim): keep its steps small
+    T: [[0.2, 0.15], [0.35, 0.12]]
+  repeats: 3                    # each doublet flown this many times (log phase re-drawn each time)
+  between: 1.5                  # [s] position hold after each doublet
+  flip_settle: 2.0              # [s] X pressed: hold there this long before the trim
+  flip_margin: 0.4              # [m] X flips only where the tape's path stays this far inside the soft arena limits
+  recover: 3.0                  # [s] position hold after the flip tape, at the X point
+  guard_extra: 0.5              # [s] the tilt and mocap guards stay off this long after the flip tape
+  blind_hold: 1.0               # [s] mocap still lost after that: level hold at hover thrust this long, then E-STOP
+  box: 1.0                      # [m] rsteps: E-STOP |x|,|y| from takeoff (flip: the arena limits)
+  ceiling_margin: 0.5           # [m] rsteps: E-STOP above the hold height + this
+  bench_thrust: 0.12            # [N] bench plan only, PROPS OFF
+  bench_rate: 1.0               # [rad/s] bench plan rate setpoint
+
 # #### // Obstacles the policy sees (radius 0.08-0.12 m like training; the closest one counts) // ####
 obstacles:
   tracked:                      # Motive rigid bodies: sphere centre = pivot + body-frame offset; all must be tracked to fly
@@ -149,7 +174,7 @@ sim:
   mocap_noise: 0.0003           # [m] per-axis position noise
   seed: 0
 
-# #### // Drone velocity model: Isaac VelCtlActionCfg (sysID fit 2026-10-01 + its training ranges) // ####
+# #### // Drone velocity model: Isaac crazyflie.yaml `rom` (sysID fit 2026-10-01 + its training ranges) // ####
 drone_model:
   kv: [4.0, 4.0, 6.0]           # [1/s] firmware velCtl.kv
   nominal:                      # joint fit of the velocity steps (crazyflie/SYSID.md)
@@ -177,22 +202,22 @@ drone_model:
   kick_prob: 0.0025             # per physics step
   kick_std: [0.05, 0.05, 0.03]
 
-# #### // Training constants: must match the Isaac safe_cf env (the policy inputs are built from these) // ####
+# #### // Training constants: must match Isaac config/crazyflie.yaml (check: tests/safe_cf/check_deploy_constants.py) // ####
 training:
-  arena_radius_ft: 6.0
-  arena_height_ft: 9.5
-  target_radius: 1.4            # [m] targets / spawns were drawn inside this cylinder
-  target_z: [0.5, 2.0]          # [m]
+  arena_radius_ft: 6.0          # arena.radius_ft
+  arena_height_ft: 9.5          # arena.height_ft
+  target_radius: 1.4            # [m] sampling.radius: targets / spawns were drawn inside this cylinder
+  target_z: [0.5, 2.0]          # [m] sampling.z_range
   target_yaw: 0.0               # [rad] setpoint frame G = upright + target yaw
-  drone_radius: 0.05            # [m]
-  unsafe_margin: 0.05           # [m]
-  boundary_unsafe_margin: 0.10  # [m]
-  target_keep_out_extra: 0.10   # [m] obstacles kept r + drone + margin + this from the target
-  v_max: [1.0, 1.0, 0.7]        # [m/s] action [-1, 1] -> velocity
-  action_history: 3
-  obstacle_z: [0.5, 2.0]        # [m] obstacle centres were sampled in this z range ...
-  obstacle_r_max: 1.5           # [m] ... within ~this of the arena centre
-  obstacle_radius: [0.08, 0.12] # [m]
-  slot_clearance: [-0.3, 2.0]   # [m] two-obstacle (33-input) policies: signed clearance clip; an empty slot reads (0, 0, 0, 2.0), vel 0
-  policy_dt: 0.01               # [s] policy step (sim.dt 1/400 x decimation 4)
-  physics_dt: 0.0025            # [s]
+  drone_radius: 0.05            # [m] drone.radius
+  unsafe_margin: 0.05           # [m] obstacles.unsafe_margin
+  boundary_unsafe_margin: 0.10  # [m] arena.boundary_unsafe_margin
+  target_keep_out_extra: 0.10   # [m] obstacles.spawn_clearance: obstacles kept r + drone + margin + this from the target
+  v_max: [1.0, 1.0, 0.7]        # [m/s] rom.v_max: action [-1, 1] -> velocity
+  action_history: 3             # observations.action_history
+  obstacle_z: [0.5, 2.0]        # [m] sampling.z_range: obstacle centres were sampled in this z range ...
+  obstacle_r_max: 1.5           # [m] ... within ~this of the arena centre (deploy-only bound, sampling.radius + slack)
+  obstacle_radius: [0.08, 0.12] # [m] obstacles.radius_range
+  slot_clearance: [-0.3, 2.0]   # [m] observations.slot_clearance; two-obstacle (33-input) policies: signed clearance clip; an empty slot reads (0, 0, 0, 2.0), vel 0
+  policy_dt: 0.01               # [s] policy step (episode: 1/sim_rate_hz 400 x decimation 4)
+  physics_dt: 0.0025            # [s] 1 / episode.sim_rate_hz

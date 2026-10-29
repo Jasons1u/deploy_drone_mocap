@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import socket
+import subprocess
 import threading
 
+from cfdeploy.config import repo_path
 from cfdeploy.safe_cf_obs import ARENA_HEIGHT, ARENA_RADIUS, DRONE_RADIUS, TARGET_KEEP_OUT_EXTRA, TARGET_RADIUS, TARGET_Z, UNSAFE_MARGIN
 
 
@@ -75,3 +79,32 @@ class VizLink:
 
     def close(self) -> None:
         self.stop_evt.set()
+
+
+# #### // The RViz process (crazyflie/viz/run_rviz.sh) // ####
+def launch_rviz(cfg):
+    """crazyflie/viz/run_rviz.sh (bridge + RViz) in its own process group on our ports; output to logs/rviz.log."""
+    if not os.environ.get("DISPLAY"):
+        print("no DISPLAY: not starting RViz (run crazyflie/viz/run_rviz.sh on a machine with a screen)")
+        return None
+    log = repo_path(cfg.paths.log_dir) / "rviz.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "w") as out:
+        proc = subprocess.Popen([str(repo_path("crazyflie/viz/run_rviz.sh")), "--state-port", str(cfg.viz.state_port), "--cmd-port", str(cfg.viz.cmd_port)],
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+    print(f"RViz starting (log {log})")
+    return proc
+
+
+def stop_rviz(proc) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    for sig, wait in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 2.0)):
+        try:
+            os.killpg(proc.pid, sig)
+            proc.wait(timeout=wait)
+            return
+        except ProcessLookupError:
+            return
+        except subprocess.TimeoutExpired:
+            continue
