@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hover check and velocity-step sysID flights on the mocap_velctl firmware (LT deadman); logs feed fit_vsteps.py."""
+"""Hover check and velocity-step sysID flights on the mocap_velctl firmware (LT deadman); logs feed fit_sysid.py vsteps."""
 
 from __future__ import annotations
 

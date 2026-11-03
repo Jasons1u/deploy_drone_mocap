@@ -8,3 +8,9 @@ crazyflie/firmware/mocap_velctl/build/
 
 crazyflie/logs/
 tests/
+
+# local log-analysis tools (not pushed)
+crazyflie/analyze_flight.py
+crazyflie/animate_window.py
+crazyflie/plot_dodges.py
+crazyflie/plot_safety.py

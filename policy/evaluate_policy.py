@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import csv
 import io
 import os
 import sys
@@ -17,6 +16,7 @@ import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # repo root: cfdeploy
 from cfdeploy.config import load, repo_path  # noqa: E402
+from cfdeploy.logs import obstacle_tracks, read_rows  # noqa: E402
 from cfdeploy.mlp_policy import load_policy  # noqa: E402
 from cfdeploy.sim import Sim  # noqa: E402
 
@@ -84,18 +84,15 @@ def attack(path) -> dict:
 def pinch(path, log) -> dict:
     """Every tracked obstacle of a real policy flight replayed exactly; the drone starts where and how that flight engaged."""
     log = repo_path(log)
-    rows = [r for r in csv.reader(open(log / "control.csv"))][1:]
+    rows = read_rows(log / "control.csv")[1:]
     engaged = next(r for r in rows if r[1] == "policy")
     t0, start, target = float(engaged[0]), np.array(engaged[2:5], float), np.array(engaged[8:11], float)
     seconds = float(next(r for r in reversed(rows) if r[1] == "policy")[0]) - t0
-    raw = [r for r in csv.reader(open(log / "obstacles.csv"))][1:]
-    tracks = {}
-    for oid in sorted({r[2] for r in raw}):
-        tracks[oid] = np.array([[float(r[0]) - t0, float(r[3]), float(r[4]), float(r[5])] for r in raw if r[2] == oid])
-    first = [a[np.searchsorted(a[:, 0], 0.0), 1:] for a in tracks.values()]
+    tracks = [np.column_stack([a[:, 0] - t0, a[:, 1:4]]) for a in obstacle_tracks(log).values()]
+    first = [a[np.searchsorted(a[:, 0], 0.0), 1:] for a in tracks]
     sim = make_sim(path, start, [(*f, 0.10) for f in first])
     sim.target.reset(target)
-    for o, a in zip(sim.obstacles, tracks.values()):
+    for o, a in zip(sim.obstacles, tracks):
         o.follow(lambda t, a=a: [np.interp(t, a[:, 0], a[:, k]) for k in (1, 2, 3)])
     run(sim, seconds)
     closest = [int(r[19]) for r in sim.rows]

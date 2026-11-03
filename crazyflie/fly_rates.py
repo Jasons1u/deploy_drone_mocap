@@ -14,14 +14,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # repo root: cfdeploy
 from cfdeploy import radio  # noqa: E402
 from cfdeploy.config import add_override_args, apply_overrides, load, set_firmware_params  # noqa: E402
+from cfdeploy.drone_model import G  # noqa: E402
 from cfdeploy.flight import arm_with_deadman, preflight  # noqa: E402
 from cfdeploy.gamepad import Edge, Gamepad, keyboard, stick_velocity, sticks  # noqa: E402
 from cfdeploy.geometry import yaw_deg  # noqa: E402
 from cfdeploy.logs import run_dir, save_flight_logs, save_link_logs, write_csv  # noqa: E402
 from cfdeploy.natnet import NatNetClient  # noqa: E402
 from cfdeploy.radio import DroneLink, MocapRelay, stop_and_disarm, wait_for_body  # noqa: E402
-from cfdeploy.rate_loop import compensate  # noqa: E402
-from cfdeploy.rate_tape import PERIOD, doublet, flip_tape, setpoint  # noqa: E402
+from cfdeploy.rate import PERIOD, compensate, doublet, flip_tape, setpoint  # noqa: E402
 from cfdeploy.safety import arena_limit, estop_reason, inside_soft, keep_inside, mocap_reason, outside_soft  # noqa: E402
 from sysid_flight import PlanFlight  # noqa: E402
 
@@ -170,7 +170,7 @@ class RateFlight(PlanFlight):
             self.trim.append(self.tel.get("velCtl.thrustN"))
             if elapsed >= dur:
                 self.hover_T = float(np.median(self.trim))
-                ratio = self.hover_T / (self.cfg.drone.mass * 9.81)
+                ratio = self.hover_T / (self.cfg.drone.mass * G)
                 print(f"  hover thrust {self.hover_T:.3f} N ({ratio:.3f} x mass g)")
                 if not c.trim_range[0] < ratio < c.trim_range[1]:
                     print(f"  hover thrust outside {c.trim_range} x mass g: landing", file=sys.stderr)
@@ -260,7 +260,7 @@ def flight(cfg, opts, link, mocap, relay, pad) -> int:
         tape = path = None
         if opts.plan == "flip":
             tape, tape_hover, plan = flip_tape(opts.tape)
-            if abs(tape_hover / (cfg.drone.mass * 9.81) - 1.0) > 0.01:
+            if abs(tape_hover / (cfg.drone.mass * G) - 1.0) > 0.01:
                 raise RuntimeError(f"tape hover {tape_hover:.4f} N was solved for another mass than drone.mass {cfg.drone.mass}")
             tape, path = compensate(tape, plan, tape_hover), plan["x"][:, :3] - plan["x"][0, :3]
             print(f"tape {Path(opts.tape).name}: {len(tape) * PERIOD:.2f} s, compensated for the firmware rate loop "

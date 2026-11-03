@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from cfdeploy.geometry import tilt_deg
+from cfdeploy.geometry import clamp_cylinder, tilt_deg
 from cfdeploy.safe_cf_obs import ARENA_HEIGHT, ARENA_RADIUS
 
 
@@ -104,14 +104,8 @@ def braking_point(p, v, limits) -> np.ndarray:
 
 def inside_soft(p, limits) -> tuple:
     """Nearest point hold_margin inside the soft arena boundary: the hold point after a boundary exit."""
-    q = np.array(p, float)
     margin = limits.hold_margin
-    r_max = ARENA_RADIUS - limits.soft_wall - margin
-    r = math.hypot(q[0], q[1])
-    if r > r_max:
-        q[:2] *= r_max / r
-    q[2] = min(max(q[2], limits.soft_bottom + margin), limits.soft_top - margin)
-    return tuple(q)
+    return tuple(clamp_cylinder(p, ARENA_RADIUS - limits.soft_wall - margin, limits.soft_bottom + margin, limits.soft_top - margin))
 
 
 # #### // Warnings that switch on and off cleanly at the edge // ####

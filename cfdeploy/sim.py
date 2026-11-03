@@ -10,6 +10,7 @@ import numpy as np
 
 from cfdeploy.drone_model import VelocityModel
 from cfdeploy.estimation import AlphaBeta
+from cfdeploy.geometry import clamp_cylinder
 from cfdeploy.logs import write_csv
 from cfdeploy.mlp_policy import obs_for
 from cfdeploy.obstacles import obstacle_ood
@@ -52,25 +53,6 @@ class SimObstacle:
         if s > self.v_cap:
             self.v *= self.v_cap / s
         self.prev, self.p = self.p, self.p + self.v * dt
-
-
-def clamp_to_arena(xyz, limits) -> np.ndarray:
-    q = np.array(xyz, float)
-    r, r_max = math.hypot(q[0], q[1]), ARENA_RADIUS - limits.hard_wall_margin
-    if r > r_max:
-        q[:2] *= r_max / r
-    q[2] = min(max(q[2], 0.0), ARENA_HEIGHT)
-    return q
-
-
-def clamp_drone(p) -> np.ndarray:
-    """The drone stays inside the arena (walls, floor, ceiling)."""
-    q = np.array(p, float)
-    r, r_max = math.hypot(q[0], q[1]), ARENA_RADIUS - DRONE_RADIUS
-    if r > r_max:
-        q[:2] *= r_max / r
-    q[2] = min(max(q[2], DRONE_RADIUS), ARENA_HEIGHT - DRONE_RADIUS)
-    return q
 
 
 # #### // Sim: policy at the training rate on the model at the physics rate; drone + obstacles seen through mocap // ####
@@ -117,7 +99,8 @@ class Sim:
         if "target" in msg and len(msg["target"]) == 3:
             self.event(f"RViz: {self.target.request(msg['target'], self.seen())}")
         elif "obstacle" in msg and len(msg.get("pos", ())) == 3 and 0 <= int(msg["obstacle"]) < len(self.obstacles):
-            self.obstacles[int(msg["obstacle"])].goal = clamp_to_arena(msg["pos"], self.cfg.arena_limits)
+            r_max = ARENA_RADIUS - self.cfg.arena_limits.hard_wall_margin
+            self.obstacles[int(msg["obstacle"])].goal = clamp_cylinder(msg["pos"], r_max, 0.0, ARENA_HEIGHT)
 
     def tick(self) -> None:
         self.policy_step()
@@ -142,7 +125,7 @@ class Sim:
         rate = self.cfg.mocap.rate
         self.p_prev = self.model.p.copy()
         self.model.step(self.cmd)
-        self.model.p = clamp_drone(self.model.p)
+        self.model.p = clamp_cylinder(self.model.p, ARENA_RADIUS - DRONE_RADIUS, DRONE_RADIUS, ARENA_HEIGHT - DRONE_RADIUS)   # walls, floor, ceiling
         for o in self.obstacles:
             o.step(self.dt)
         self.t += self.dt

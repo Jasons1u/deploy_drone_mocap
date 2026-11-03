@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit the closed-loop velocity response from `sysid_flight.py --plan vsteps` logs (--cascade: the model Isaac uses)."""
+"""Fit sysID flights: `vsteps` = velocity response (sysid_flight.py; --cascade = the Isaac model), `rsteps` = rate loop + thrust lag (fly_rates.py)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from scipy.signal import savgol_filter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # repo root: cfdeploy
 from cfdeploy.config import load as load_config  # noqa: E402
-from cfdeploy.drone_model import step_response  # noqa: E402
+from cfdeploy.drone_model import G, step_response  # noqa: E402
+from cfdeploy.rate import DT, simulate  # noqa: E402
 
 CFG = load_config()
 RATE = CFG.mocap.rate                       # [Hz] mocap frame rate
@@ -21,12 +22,16 @@ MOCAP_LATENCY = CFG.mocap.latency           # [s] exposure -> host arrival
 KV = tuple(CFG.drone_model.kv)              # firmware velCtl.kvX/kvY/kvZ during the sysID flights
 D_FB = CFG.drone_model.nominal.d_fb         # [s] mocap -> onboard alpha-beta estimate
 AXES = "xyz"
+CF_MS_WRAP = 1 << 24                        # log timestamps are 24-bit milliseconds since boot
 
 
-# #### // Logs -> mocap kinematics and velocity-step edges // ####
+# #### // Logs -> mocap kinematics // ####
+def read(run: Path, name: str):
+    return np.genfromtxt(run / name, delimiter=",", names=True, dtype=None, encoding=None)
+
+
 def load(run: Path):
-    rd = lambda f: np.genfromtxt(run / f, delimiter=",", names=True, dtype=None, encoding=None)
-    return rd("setpoints.csv"), rd("mocap.csv"), rd("cf_vel.csv")
+    return read(run, "setpoints.csv"), read(run, "mocap.csv"), read(run, "cf_vel.csv")
 
 
 def mocap_kinematics(m):
@@ -41,6 +46,7 @@ def mocap_kinematics(m):
     return t, pos, vel, acc
 
 
+# #### // vsteps: velocity-step edges // ####
 def edges(sp):
     """Velocity-segment starts: (t, seg, axis, v_from, v_to, duration)."""
     out, prev_v = [], np.zeros(3)
@@ -58,7 +64,7 @@ def edges(sp):
     return out
 
 
-# #### // Joint fit of the cascade model over many edges (the model in config drone_model / Isaac VelCtlAction) // ####
+# #### // vsteps: joint fit of the cascade model over many edges (the model in config drone_model / Isaac VelCtlAction) // ####
 def cascade_edges(runs, axes):
     """Per-edge measured window (t from the step, velocity on the step axis, v and a at the step) for the given axes."""
     out = []
@@ -109,7 +115,7 @@ def cascade_report(runs) -> None:
               f"max {np.max(r['rms']):.3f} m/s")
 
 
-# #### // Diagnostics: per-edge first-order fits, attitude tracking, onboard estimate lag // ####
+# #### // vsteps diagnostics: per-edge first-order fits, attitude tracking, onboard estimate lag // ####
 def first_order(t, t_s, v0, slope, v_to, k, tau, d, a_max):
     """Pre-step trend v0 + slope*(t - t_s) until t_s + d, then first order toward k*v_to with an acceleration limit."""
     dt = 0.0005
@@ -155,8 +161,7 @@ def estimator_lag(t, v_mocap, tel, axis):
 
 def attitude_report(run: Path, sp):
     """Onboard tilt (IMU) vs desired tilt, both legacy convention: best-fit lag, rms, error spectrum peak above 3 Hz."""
-    rd = lambda name: np.genfromtxt(run / name, delimiter=",", names=True)
-    vel, ref = rd("cf_vel.csv"), rd("cf_ref.csv")
+    vel, ref = read(run, "cf_vel.csv"), read(run, "cf_ref.csv")
     t0, t1 = sp["t"][0] + 3.0, sp["t"][-1] - 5.0
     tt = np.arange(t0, t1, 0.01)
     out = {}
@@ -215,13 +220,130 @@ def edge_report(runs) -> None:
               f"gain {fmt(acc_e, 'k')}; accel limit (|step| >= 0.9) {fmt(big, 'a_max')} m/s^2, peak |a| {fmt(big, 'peak')}")
 
 
+# #### // rsteps: doublets and onboard signals on the host clock // ####
+def onboard_time(*blocks) -> list:
+    """Host time of each block's samples: unwrapped cf_ms plus the smallest arrival gap over all blocks (the clock offset)."""
+    ms = [np.asarray(b["cf_ms"], float) for b in blocks]
+    ms = [m + CF_MS_WRAP * np.cumsum(np.r_[0, np.diff(m) < -CF_MS_WRAP / 2]) for m in ms]
+    offset = min(float(np.min(b["t"] - m / 1e3)) for b, m in zip(blocks, ms))
+    return [m / 1e3 + offset for m in ms]
+
+
+def doublets(rt) -> list:
+    """(column 0-3, send times, command, hover thrust) per doublet in rates.csv; column 0 as a fraction of hover (the last row)."""
+    out = []
+    for seg in np.unique(rt["seg"]):
+        r = rt[rt["seg"] == seg]
+        cmd = np.column_stack([r["T"] / r["T"][-1], r["p"], r["q"], r["r"]])
+        col = int(np.argmax(np.abs(cmd - [1.0, 0.0, 0.0, 0.0]).max(axis=0)))
+        out.append((col, np.asarray(r["t"], float), cmd[:, col], float(r["T"][-1])))
+    return out
+
+
+def load_rsteps(run: Path) -> dict:
+    rt, rate = read(run, "rates.csv"), read(run, "cf_rate.csv")
+    (t_rate,) = onboard_time(rate)
+    t_m, _, vel, _ = mocap_kinematics(read(run, "mocap.csv"))
+    gyro = np.radians(np.column_stack([rate["gyrox"], rate["gyroy"], rate["gyroz"]]))
+    return dict(doublets=doublets(rt), t_rate=t_rate, gyro=gyro, t_m=t_m, vz=vel[:, 2])
+
+
+# #### // rsteps: exact first-order response to a command held from each send time (smooth in tau and the delay) // ####
+def lag_response(t, t_cmd, u, base, y0, tau, d, out="y"):
+    """y' = (u(t - d) - y) / tau from y(t[0]) = y0, u = base before the first send; out "y" or "int" (integral from t[0])."""
+    t_on, du = t_cmd + d, np.diff(np.r_[base, u])
+    late = t_on > t[0]
+    u0 = base + du[~late].sum()
+    s = t[:, None] - t_on[None, late]
+    e0, es = np.exp(-(t - t[0]) / tau), np.exp(-np.clip(s, 0.0, None) / tau)
+    if out == "int":
+        return u0 * (t - t[0]) + (y0 - u0) * tau * (1.0 - e0) + (np.clip(s, 0.0, None) - tau * (1.0 - es)) @ du[late]
+    return u0 + (y0 - u0) * e0 + (1.0 - es) @ du[late]
+
+
+def window(t, t_cmd, before=0.03, after=0.03):
+    return (t >= t_cmd[0] - before) & (t <= t_cmd[-1] + after)
+
+
+def fit_lag(cases, model) -> tuple:
+    """Joint (tau, d) over cases (t, measured, ...): least squares of model(case, tau, d) - measured."""
+    res = least_squares(lambda x: np.concatenate([model(c, *x) - c[1] for c in cases]), [0.03, 0.02],
+                        bounds=([0.003, 0.0], [0.3, 0.12]), x_scale=[0.01, 0.01])
+    return res.x, float(np.sqrt(np.mean(res.fun ** 2)))
+
+
+# #### // rsteps: roll and pitch through the firmware loop (cfdeploy.rate): Ixx, Iyy, motor lag; the delay grid-searched // ####
+def fit_loop(runs) -> dict | None:
+    cases = [(r["t_rate"][w], r["gyro"][w, col - 1], tc, u, col - 1) for r in runs for col, tc, u, _ in r["doublets"] if col in (1, 2)
+             for w in [window(r["t_rate"], tc)]]
+    if not cases:
+        return None
+    n = int(max(c[0][-1] - c[0][0] for c in cases) / DT) + 2
+    grid = np.arange(n) * DT
+
+    def residual(x, d):
+        cmd, w0 = np.zeros((n, len(cases), 3)), np.zeros((len(cases), 3))
+        for b, (t, y, tc, u, j) in enumerate(cases):
+            i = np.searchsorted(tc + d, t[0] + grid, side="right") - 1
+            cmd[:, b, j], w0[b, j] = np.where(i >= 0, u[np.clip(i, 0, None)], 0.0), y[0]
+        gyro = simulate(cmd, np.r_[np.exp(x[:2]), 1.0], np.exp(x[2]), w0=w0)[1]
+        return np.concatenate([np.interp(t - t[0], grid, gyro[:, b, j]) - y for b, (t, y, _, _, j) in enumerate(cases)])
+
+    best, x0 = None, np.log([3e-5, 3e-5, 0.04])
+    for d in np.arange(0.0, 0.031, 0.002):
+        res = least_squares(residual, x0, args=(d,), bounds=(np.log([5e-6, 5e-6, 0.005]), np.log([2e-4, 2e-4, 0.2])))
+        rms = float(np.sqrt(np.mean(res.fun ** 2)))
+        if best is None or rms < best["rms"]:
+            best, x0 = dict(J=np.exp(res.x[:2]), tau_m=float(np.exp(res.x[2])), d=float(d), rms=rms, n=len(cases)), res.x
+    return best
+
+
+def fit_thrust(runs) -> dict | None:
+    """Collective lag on the mocap vertical velocity: vz' = g (f - 1), f first order behind the commanded fraction of hover."""
+    cases = [(r["t_m"][w], r["vz"][w], tc, u, r["vz"][w][0])
+             for r in runs for col, tc, u, _ in r["doublets"] if col == 0 for w in [window(r["t_m"], tc)]]
+    if not cases:
+        return None
+    vz = lambda c, tau, d: c[4] + G * (lag_response(c[0], c[2], c[3], 1.0, 1.0, tau, d, out="int") - (c[0] - c[0][0]))
+    (tau, d), rms = fit_lag(cases, vz)
+    return dict(tau=float(tau), d=float(d), rms=rms, n=len(cases))
+
+
+def fit_rsteps(paths) -> dict:
+    runs = [load_rsteps(Path(p)) for p in paths]
+    return {"loop": fit_loop(runs), "T": fit_thrust(runs)}
+
+
+def rsteps_report(runs) -> None:
+    out = fit_rsteps(runs)
+    f, T = out["loop"], out["T"]
+    if f:
+        print(f"rate loop: Ixx {f['J'][0]:.3e}, Iyy {f['J'][1]:.3e} kg m^2, motor lag {f['tau_m'] * 1e3:.1f} ms, delay {f['d'] * 1e3:.0f} ms "
+              f"(host send -> gyro), rms {f['rms']:.3f} rad/s over {f['n']} roll/pitch doublets")
+    if T:
+        print(f"collective: tau {T['tau'] * 1e3:.1f} ms, delay {T['d'] * 1e3:.1f} ms (host send -> mocap; expect ~ motor lag + mocap latency), "
+              f"rms {T['rms']:.3f} m/s over {T['n']} doublets")
+    if f:
+        J = np.r_[f["J"], 0.88 * f["J"].sum()]   # yaw is torque-limited (velCtl.yawLim): Izz as CF2.0, 0.88 (Ixx + Iyy)
+        print("\nmj-nlp models/crazyflie/crazyflie.xml:")
+        print(f'  <inertial ... diaginertia="{J[0]:.4e} {J[1]:.4e} {J[2]:.4e}"/>   (Izz = 0.88 (Ixx + Iyy), not identified)')
+        print(f'  every actuator: dynprm="{f["tau_m"]:.4f}"   (motor lag)')
+        print("then re-solve the flip; fly_rates.py fits the rate PID's commands onto its planned rates")
+
+
 # #### // CLI // ####
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("runs", nargs="+", type=Path, help="log dirs from sysid_flight.py --plan vsteps")
-    ap.add_argument("--cascade", action="store_true", help="joint fit of the firmware-structured cascade model")
+    sub = ap.add_subparsers(dest="plan", required=True)
+    vs = sub.add_parser("vsteps", help="velocity steps (sysid_flight.py --plan vsteps)")
+    vs.add_argument("runs", nargs="+", type=Path, help="log dirs from sysid_flight.py --plan vsteps")
+    vs.add_argument("--cascade", action="store_true", help="joint fit of the firmware-structured cascade model")
+    rs = sub.add_parser("rsteps", help="rate and thrust doublets (fly_rates.py --plan rsteps)")
+    rs.add_argument("runs", nargs="+", type=Path, help="log dirs from fly_rates.py --plan rsteps")
     args = ap.parse_args(argv)
-    if args.cascade:
+    if args.plan == "rsteps":
+        rsteps_report(args.runs)
+    elif args.cascade:
         cascade_report(args.runs)
     else:
         edge_report(args.runs)

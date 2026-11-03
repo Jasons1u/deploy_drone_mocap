@@ -1,6 +1,6 @@
 # Velocity-loop sysID: CF2.1 Brushless + `mocap_velctl` firmware (2026-10-01)
 
-Flights with `sysid_flight.py --plan vsteps` (was `hover.py`) and attitude kp 9. Fits are from `fit_vsteps.py`; `--cascade` fits the model used in Isaac.
+Flights with `sysid_flight.py --plan vsteps` (was `hover.py`) and attitude kp 9. Fits are from `fit_sysid.py vsteps`; `--cascade` fits the model used in Isaac.
 
 ## Configuration this model is valid for
 

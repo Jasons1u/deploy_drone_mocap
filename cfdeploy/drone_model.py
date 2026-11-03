@@ -56,7 +56,7 @@ class VelocityModel:
         self.p = self.p + (self.v + self.bias) * dt
 
 
-# #### // 1-axis step response with a continuous delay, used to fit the model (fit_vsteps.py) // ####
+# #### // 1-axis step response with a continuous delay, used to fit the model (fit_sysid.py vsteps) // ####
 def step_response(t_rel, v0, a0, v_from, v_to, kv, tau_a, d_cmd, a_max, drag, d_fb, dt=0.0025):
     """Same cascade on one axis; t=0 at the step, the command switch interpolated within a step so d_cmd is continuous."""
     n_pre, n = int(round(0.3 / dt)), int(round(t_rel[-1] / dt)) + 2

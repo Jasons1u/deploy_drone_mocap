@@ -23,7 +23,7 @@ radio:
 
 telemetry:                      # log block periods [ms]; each block adds 1000/period downlink packets/s
   flight: {pos: 20, vel: 20, ref: 50, acc: 50, mot: 100, est: 100}   # ~160 pkt/s, well under the ~340 pkt/s uplink
-  sysid: {pos: 10, vel: 10, ref: 20, acc: 20, mot: 10, est: 100}     # ~410 pkt/s: the detail fit_vsteps.py uses
+  sysid: {pos: 10, vel: 10, ref: 20, acc: 20, mot: 10, est: 100}     # ~410 pkt/s: the detail fit_sysid.py vsteps uses
   delay_warn: 0.06              # [s] telemetry this late (downlink backlog) -> warning event ...
   delay_clear: 0.03             # [s] ... cleared below this
 
@@ -101,7 +101,7 @@ arena_limits:
 
 # #### // fly_policy.py // ####
 policy_flight:
-  policy: policy/models/safecf_moving_good.npz
+  policy: policy/models/safecf_moving2_caps.npz
   height: 0.6                   # [m] takeoff height above the floor point
   max_engage_speed: 0.3         # [m/s] RB engages the policy only when this slow
   obstacle_fresh: 0.1           # [s] RB engages only if every tracked obstacle is this fresh
