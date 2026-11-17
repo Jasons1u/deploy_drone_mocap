@@ -69,6 +69,12 @@ def flip_tape(path, pad: int = 10) -> tuple:
     return rows, float(hover[0]), plan
 
 
+def handover(plan: dict, rate: float = 1.0, after: float = 0.05) -> int:
+    """The tape row the onboard position loop takes over at: `after` [s] past the plan's last |body rate| above `rate` [rad/s]."""
+    t = plan["t"][np.flatnonzero(np.linalg.norm(plan["w"], axis=1) > rate)[-1]]
+    return int(np.ceil((t + after) / PERIOD))
+
+
 def doublet(col: int, amp: float, dur: float) -> np.ndarray:
     """+amp then -amp on one column (0: thrust as a fraction of hover, 1-3: p q r [rad/s]) for dur [s] each, then a hover row."""
     n = int(round(dur / PERIOD))
@@ -139,3 +145,52 @@ def compensate(rows, plan: dict, hover: float, pad: int = 10, angle: float = 30.
     lo, hi = 4 * MOTOR[0] / hover - 1.0, MAX_THRUST / hover - 1.0
     out[:, 0] = 1.0 + lsq_linear(np.vstack([L, R]), np.r_[pulses @ (out[:, 0] - 1.0), np.zeros(m - 1)], bounds=(lo, hi)).x
     return out
+
+
+# #### // Mocap feedback around a flip tape: the plan at each pose's exposure time vs the pose // ####
+def quat_mat(q) -> np.ndarray:
+    """Unit quaternions (..., 4) as (w, x, y, z), body -> world, as rotation matrices (..., 3, 3)."""
+    w, x, y, z = np.moveaxis(np.asarray(q, float), -1, 0)
+    R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                  [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                  [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+    return np.moveaxis(R, (0, 1), (-2, -1))
+
+
+class TapeTracker:
+    """Rows sent at tape time tau reach the rate PID at plan time tau; poses exposed at tape time t are compared with the plan at t - delay."""
+
+    def __init__(self, plan: dict, hover: float, here, yaw: float, gains):
+        X, g = np.asarray(plan["x"], float), gains
+        q0 = X[0, 3:7]
+        dyaw = yaw - np.arctan2(2 * (q0[0] * q0[3] + q0[1] * q0[2]), 1 - 2 * (q0[2] ** 2 + q0[3] ** 2))
+        A = np.array([[np.cos(dyaw), -np.sin(dyaw), 0.0], [np.sin(dyaw), np.cos(dyaw), 0.0], [0.0, 0.0, 1.0]])   # plan frame -> world
+        self.t, self.dt = np.asarray(plan["t"], float), float(plan["t"][1] - plan["t"][0])
+        self.p, self.v = np.asarray(here, float) + (X[:, :3] - X[0, :3]) @ A.T, X[:, 7:10] @ A.T
+        self.R = A @ quat_mat(X[:, 3:7])
+        self.m, self.hover, self.g = hover / 9.81, hover, g
+        self.kr = np.array([g.kr, g.kr, g.kr_yaw])
+
+    def at(self, tau) -> int:
+        return int(np.clip(round(tau / self.dt), 0, len(self.t) - 1))
+
+    def correct(self, tau, t, P, Q) -> tuple:
+        """Row for plan time tau, recent poses (tape-time exposures t ascending, positions P, quats Q) -> (dT [N], dw [rad/s], e_p [m], e_R [rad])."""
+        g, t, P = self.g, np.asarray(t, float), np.asarray(P, float)
+        ke, ki = self.at(t[-1] - g.delay), self.at(tau)
+        recent = t >= t[-1] - g.window
+        tc = t[recent].mean()
+        v = np.polyfit(t[recent] - tc, P[recent], 1)[0] if recent.sum() > 2 else self.v[ke]
+        kc = self.at(tc - g.delay)
+        e_p, e_v = self.p[ke] - P[-1], self.v[kc] - v
+        a = g.kp * e_p + g.kd * e_v
+        a *= min(1.0, g.a_max / max(np.linalg.norm(a), 1e-9))
+        Rm, Rr = quat_mat(Q[-1]), self.R[ke]
+        dR = Rr.T @ self.R[ki]                         # the plan's body-frame rotation from the pose to the row
+        E = Rr.T @ Rm - Rm.T @ Rr
+        e_R = 0.5 * np.array([E[2, 1], E[0, 2], E[1, 0]])
+        if np.trace(Rr.T @ Rm) < 1.0 + 2.0 * np.cos(np.radians(g.max_att)):   # past max_att: a mocap flip more likely than a real error
+            return 0.0, np.zeros(3), e_p, e_R
+        dT = float(np.clip(self.m * a @ (Rm @ dR)[:, 2], -g.dT_max * self.hover, g.dT_max * self.hover))
+        dw = np.clip(-self.kr * (dR.T @ e_R), -g.dw_max, g.dw_max)
+        return dT, dw, e_p, e_R

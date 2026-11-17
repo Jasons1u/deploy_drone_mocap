@@ -6,7 +6,7 @@ paths:
 
 # #### // Motive / NatNet // ####
 mocap:
-  server: 192.168.1.2           # Motive PC
+  server: 192.168.7.128           # Motive PC
   drone_body: 23                # rigid body streaming ID of the drone
   rate: 240.0                   # [Hz] frame rate; frame numbers time the velocity filters
   latency: 0.006                # [s] exposure -> host arrival (5.5 ms in Motive + wired network), measured 2026-10-01
@@ -77,7 +77,7 @@ gamepad:
     hold_threshold: 0.0         # in flight, LT below this = E-STOP (hysteresis)
     arm_hold: 1.5               # [s]
     arm_window: 120.0           # [s] give up waiting
-  buttons: {a: 0, b: 1, x: 2, y: 3, rb: 5}
+  buttons: {a: 0, b: 1, x: 2, y: 3, lb: 4, rb: 5}
   axes: {lx: 0, ly: 1, rx: 3, ry: 4}
 
 sticks:
@@ -141,10 +141,31 @@ rate_flight:
   repeats: 3                    # each doublet flown this many times (log phase re-drawn each time)
   between: 1.5                  # [s] position hold after each doublet
   flip_settle: 2.0              # [s] X pressed: hold there this long before the trim
-  flip_margin: 0.4              # [m] X flips only where the tape's path stays this far inside the soft arena limits
-  recover: 3.0                  # [s] position hold after the flip tape, at the X point
+  flip_margin: 0.0              # [m] X flips only where the tape's path stays this far inside the soft arena limits
+  home: [-0.388, 0.709, 1.025]  # [m] Y on the sticks glides here (the X point the flip launched from, log 20261116_190820_flip)
+  home_speed: 0.5               # [m/s] Y: speed of the hold point on the way home
+  home_yaw: 0.0                 # [deg] Y: turns to this heading on the way home (+x, the way the plan faces), at sticks.max_yaw_rate
+  home_tol: 0.05                # [m] Y: prints 'home' (ready for X) once this close
+  home_yaw_tol: 2.0             # [deg] ... and its heading this close
+  recover: 3.0                  # [s] position hold after the flip tape, at its end (the X point plus its path's end offset)
+  handover: 0.05                # [s] the tape ends this long after its plan's last body rate above 1 rad/s and the hold brakes; null = the whole tape
+  thrust_gain: 1.0              # x the collective (tape + tracker) through the flip tape: < 1 emulates a thrust shortfall, as the CVaR solve draws it
+  thrust_gain_from: 0.2         # [s] ... from this far into the tape (after mj-nlp's pinned 0.2 s hover lead-in)
   guard_extra: 0.5              # [s] the tilt and mocap guards stay off this long after the flip tape
   blind_hold: 1.0               # [s] mocap still lost after that: level hold at hover thrust this long, then E-STOP
+  track:                        # mocap feedback through a flip tape (cfdeploy.rate.TapeTracker); enabled: false flies it open loop
+    enabled: true
+    kp: 6.0                     # [1/s^2] position error -> thrust along the body z
+    kd: 4.0                     # [1/s] velocity error -> thrust along the body z
+    kr: 8.0                     # [1/s] attitude error -> roll and pitch rate
+    kr_yaw: 2.0                 # [1/s] attitude error -> yaw rate
+    a_max: 8.0                  # [m/s^2] position feedback clip
+    dT_max: 0.3                 # [x hover] thrust correction clip
+    dw_max: 3.0                 # [rad/s] rate correction clip per axis
+    delay: 0.008                # [s] send -> rate PID: a pose exposed at tape time t is compared with the plan at t - delay
+    window: 0.025               # [s] velocity: line fit over the poses this recent
+    max_age: 0.03               # [s] newest pose older than this (occluded) -> no correction on that row
+    max_att: 60.0               # [deg] attitude error past this -> no correction (a mocap flip more likely than a real error)
   box: 1.0                      # [m] rsteps: E-STOP |x|,|y| from takeoff (flip: the arena limits)
   ceiling_margin: 0.5           # [m] rsteps: E-STOP above the hold height + this
   bench_thrust: 0.12            # [N] bench plan only, PROPS OFF
@@ -221,3 +242,14 @@ training:
   slot_clearance: [-0.3, 2.0]   # [m] observations.slot_clearance; two-obstacle (33-input) policies: signed clearance clip; an empty slot reads (0, 0, 0, 2.0), vel 0
   policy_dt: 0.01               # [s] policy step (episode: 1/sim_rate_hz 400 x decimation 4)
   physics_dt: 0.0025            # [s] 1 / episode.sim_rate_hz
+
+# #### // racer/log_gate.py (racer + gate mocap log to validate the vision stack) // ####
+gate_log:
+  log_dir: racer/logs           # relative to the repo root
+  racer_body: 24                # Motive rigid body ID of the racer
+  gate_body: 27                 # Motive rigid body ID of the gate
+  status_rate: 5.0              # [Hz] terminal status line
+
+
+
+

@@ -7,6 +7,7 @@ crazyflie/firmware/mocap_velctl/build/
 
 
 crazyflie/logs/
+racer/logs/
 tests/
 
 # local log-analysis tools (not pushed)
